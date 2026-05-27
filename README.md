@@ -33,6 +33,7 @@
 - 工具调用解析支持 `<tool_call`、`<tool_code`、`<invoke`、`<function_call`、`[Called tool:`、代码块等多种格式
 - `deepseek-reasoner-*` 模型会把思维内容包裹在 `<think>...</think>`
 - API Key 请求会在当前用户可见账号之间轮询，提高多账号利用率
+- 支持通过 HTTP/HTTPS/SOCKS 代理转发上游请求，绕过 IP 风控或区域限制
 - 可选调试模式，记录请求全链路日志（敏感信息自动脱敏）
 
 ## 运行要求
@@ -126,6 +127,23 @@ ALLOWED_ORIGINS=
 | `LOGIN_RATE_LIMIT_BLOCK_MS` | `900000` | 触发上限后临时封禁时长（毫秒） |
 | `UPSTREAM_REQUEST_TIMEOUT_MS` | `30000` | 上游非流式请求超时（毫秒） |
 | `UPSTREAM_STREAM_TIMEOUT_MS` | `300000` | 上游流式请求超时（毫秒） |
+
+### 上游代理
+
+如果服务器 IP 被 DeepSeek 风控（典型表现：登录返回 HTTP 202 + 空 body），可配置代理转发所有上游请求。
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `UPSTREAM_PROXY` | 空 | 显式代理地址，优先级最高 |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 空 | 标准代理环境变量，按顺序回退 |
+
+支持的代理协议：
+
+- `http://host:port` / `https://host:port` — 需要 `npm install undici`
+- `socks5://host:port` / `socks5h://host:port` — 需要 `npm install undici socks-proxy-agent`
+- 含认证：`http://user:pass@host:port`
+
+> 项目默认零 npm 依赖；只有启用代理时才需要安装上述包。配置代理后，**所有出向 DeepSeek / WASM 下载的 fetch** 都会走代理，登录态、token 刷新、PoW、流式聊天全部覆盖。
 
 ## 控制台能力
 

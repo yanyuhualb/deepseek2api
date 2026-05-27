@@ -38,6 +38,15 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
 
 const isProduction = process.env.NODE_ENV === "production";
 
+const upstreamProxy = process.env.UPSTREAM_PROXY
+  || process.env.HTTPS_PROXY
+  || process.env.https_proxy
+  || process.env.HTTP_PROXY
+  || process.env.http_proxy
+  || process.env.ALL_PROXY
+  || process.env.all_proxy
+  || "";
+
 export const config = Object.freeze({
   port: Number(process.env.PORT ?? 3000),
   debug: process.env.DEBUG === "true",
@@ -49,6 +58,7 @@ export const config = Object.freeze({
   sessionTtlMs: 1000 * 60 * 60 * 24 * 7,
   requestBodyLimitBytes: 110 * 1024 * 1024,
   allowedOrigins,
+  upstreamProxy,
   upstreamRequestTimeoutMs: Number(process.env.UPSTREAM_REQUEST_TIMEOUT_MS ?? 30000),
   upstreamStreamTimeoutMs: Number(process.env.UPSTREAM_STREAM_TIMEOUT_MS ?? 300000),
   loginRateLimitMaxAttempts: Number(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS ?? 5),
