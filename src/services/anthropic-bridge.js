@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { buildPromptFromMessages } from "../utils/prompt.js";
+import { config } from "../config.js";
+import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
@@ -11,6 +12,7 @@ import {
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
+import { applyOverflowUpload } from "./history-upload.js";
 import { resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
 
 function extractSystemPrompt(system) {
@@ -113,9 +115,13 @@ function resolveAnthropicRequest(body) {
   const resolvedModel = resolveOpenAiModel(body.model);
   const model = tools?.length ? resolveToolCallModel(resolvedModel) : resolvedModel;
 
+  const { prompt, overflowText, overflowCount } = buildPromptWithOverflow(allMessages, null, config.maxPromptChars);
+
   return {
     model,
-    prompt: buildPromptFromMessages(allMessages, null),
+    prompt,
+    overflowText,
+    overflowCount,
     tools,
     modelName: body.model ?? "deepseek-chat-fast"
   };
@@ -162,26 +168,32 @@ export async function collectAnthropicMessage({ account, body, deleteAfterFinish
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
-      const { response } = await startCompletion({ account, requestOptions, sessionId, debugCtx });
-      const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
+      try {
+        const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+        const upstreamRequest = { ...requestOptions, prompt };
+        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
+        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
 
-      const rawToolCalls = extractToolCalls(content, debugCtx);
-      const toolCalls = requestOptions.tools
-        ? filterToolCalls(rawToolCalls, requestOptions.tools)
-        : rawToolCalls;
+        const rawToolCalls = extractToolCalls(content, debugCtx);
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools)
+          : rawToolCalls;
 
-      const contentBlocks = formatAnthropicContent(toolCalls, content, reasoningContent);
+        const contentBlocks = formatAnthropicContent(toolCalls, content, reasoningContent);
 
-      return {
-        id: `msg_${randomUUID()}`,
-        type: "message",
-        role: "assistant",
-        model: requestOptions.modelName,
-        content: contentBlocks,
-        stop_reason: toolCalls ? "tool_use" : "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      };
+        return {
+          id: `msg_${randomUUID()}`,
+          type: "message",
+          role: "assistant",
+          model: requestOptions.modelName,
+          content: contentBlocks,
+          stop_reason: toolCalls ? "tool_use" : "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 }
+        };
+      } catch (error) {
+        throw wrapUpstreamError(error, requestOptions.prompt?.length);
+      }
     }
   });
 }
@@ -201,7 +213,9 @@ export async function streamAnthropicMessage({ response, account, body, deleteAf
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
-      const { response: dsResponse } = await startCompletion({ account, requestOptions, sessionId, debugCtx });
+      const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+      const upstreamRequest = { ...requestOptions, prompt };
+      const { response: dsResponse } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
 
       response.writeHead(200, {
         "cache-control": "no-cache, no-transform",
@@ -336,10 +350,11 @@ export async function streamAnthropicMessage({ response, account, body, deleteAf
       }, debugCtx);
 
       if (upstreamError) {
-        debugCtx?.logFinalResponse({ error: upstreamError.text, code: upstreamError.code });
+        const friendlyText = formatUpstreamError(upstreamError.text, requestOptions.prompt?.length);
+        debugCtx?.logFinalResponse({ error: friendlyText, code: upstreamError.code });
         writeSSE(response, "error", {
           type: "error",
-          error: { type: "api_error", message: upstreamError.text }
+          error: { type: "api_error", message: friendlyText }
         });
         response.end();
         return;

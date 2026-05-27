@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { buildPromptFromMessages } from "../utils/prompt.js";
+import { config } from "../config.js";
+import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
@@ -11,6 +12,7 @@ import {
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
+import { applyOverflowUpload } from "./history-upload.js";
 import { resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
 
 function toContentText(content) {
@@ -113,9 +115,13 @@ function resolveResponsesRequest(body) {
   const resolvedModel = resolveOpenAiModel(body.model);
   const model = tools?.length ? resolveToolCallModel(resolvedModel) : resolvedModel;
 
+  const { prompt, overflowText, overflowCount } = buildPromptWithOverflow(messages, null, config.maxPromptChars);
+
   return {
     model,
-    prompt: buildPromptFromMessages(messages, null),
+    prompt,
+    overflowText,
+    overflowCount,
     tools
   };
 }
@@ -176,27 +182,33 @@ export async function collectResponsesResult({ account, body, deleteAfterFinish,
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
-      const { response } = await startCompletion({ account, requestOptions, sessionId, debugCtx });
-      const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
+      try {
+        const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+        const upstreamRequest = { ...requestOptions, prompt };
+        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
+        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
 
-      const rawToolCalls = extractToolCalls(content, debugCtx);
-      const toolCalls = requestOptions.tools
-        ? filterToolCalls(rawToolCalls, requestOptions.tools)
-        : rawToolCalls;
+        const rawToolCalls = extractToolCalls(content, debugCtx);
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools)
+          : rawToolCalls;
 
-      const output = buildResponsesOutput(toolCalls, content, reasoningContent);
-      const now = Math.floor(Date.now() / 1000);
+        const output = buildResponsesOutput(toolCalls, content, reasoningContent);
+        const now = Math.floor(Date.now() / 1000);
 
-      return {
-        id: `resp_${randomUUID()}`,
-        object: "response",
-        created_at: now,
-        status: "completed",
-        completed_at: now,
-        model: requestOptions.model.id,
-        output,
-        usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
-      };
+        return {
+          id: `resp_${randomUUID()}`,
+          object: "response",
+          created_at: now,
+          status: "completed",
+          completed_at: now,
+          model: requestOptions.model.id,
+          output,
+          usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+        };
+      } catch (error) {
+        throw wrapUpstreamError(error, requestOptions.prompt?.length);
+      }
     }
   });
 }
@@ -273,7 +285,9 @@ export async function streamResponsesResult({ response, account, body, deleteAft
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
-      const { response: dsResponse } = await startCompletion({ account, requestOptions, sessionId, debugCtx });
+      const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+      const upstreamRequest = { ...requestOptions, prompt };
+      const { response: dsResponse } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
 
       response.writeHead(200, {
         "cache-control": "no-cache, no-transform",
@@ -369,12 +383,13 @@ export async function streamResponsesResult({ response, account, body, deleteAft
       }, debugCtx);
 
       if (state.upstreamError) {
-        debugCtx?.logFinalResponse({ error: state.upstreamError.text, code: state.upstreamError.code });
+        const friendlyText = formatUpstreamError(state.upstreamError.text, requestOptions.prompt?.length);
+        debugCtx?.logFinalResponse({ error: friendlyText, code: state.upstreamError.code });
         writeSSE("response.failed", {
           response: {
             id: responseId, object: "response", created_at: created,
             status: "failed",
-            error: { type: "upstream_error", code: state.upstreamError.code, message: state.upstreamError.text },
+            error: { type: "upstream_error", code: state.upstreamError.code, message: friendlyText },
             model: modelId, output: [],
             usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
           }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { buildPromptFromMessages } from "../utils/prompt.js";
+import { config } from "../config.js";
+import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
@@ -11,6 +12,7 @@ import {
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
+import { applyOverflowUpload } from "./history-upload.js";
 import { assertNoLegacySearchOptions, resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
 
 function toContentText(content) {
@@ -66,9 +68,17 @@ function resolveCompletionRequest(body) {
   const resolvedModel = resolveOpenAiModel(body?.model);
   const model = (tools?.length) ? resolveToolCallModel(resolvedModel) : resolvedModel;
 
+  const { prompt, overflowText, overflowCount } = buildPromptWithOverflow(
+    normalizeMessages(body?.messages),
+    toolPrompt,
+    config.maxPromptChars
+  );
+
   return {
     model,
-    prompt: buildPromptFromMessages(normalizeMessages(body?.messages), toolPrompt),
+    prompt,
+    overflowText,
+    overflowCount,
     tools: tools || null
   };
 }
@@ -96,17 +106,36 @@ export async function collectOpenAiResponse({ account, body, deleteAfterFinish =
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
-      const { response } = await startCompletion({ account, requestOptions, sessionId, debugCtx });
-      const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
+      try {
+        const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+        const upstreamRequest = { ...requestOptions, prompt };
+        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
+        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
 
-      const rawToolCalls = extractToolCalls(content, debugCtx);
-      const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
+        const rawToolCalls = extractToolCalls(content, debugCtx);
+        const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
 
-      if (toolCalls) {
+        if (toolCalls) {
+          const message = {
+            role: "assistant",
+            content: null,
+            tool_calls: toolCalls
+          };
+          if (reasoningContent) {
+            message.reasoning_content = reasoningContent;
+          }
+          return {
+            id: `chatcmpl_${randomUUID()}`,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: requestOptions.model.id,
+            choices: [{ index: 0, finish_reason: "tool_calls", message }]
+          };
+        }
+
         const message = {
           role: "assistant",
-          content: null,
-          tool_calls: toolCalls
+          content
         };
         if (reasoningContent) {
           message.reasoning_content = reasoningContent;
@@ -116,24 +145,11 @@ export async function collectOpenAiResponse({ account, body, deleteAfterFinish =
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
           model: requestOptions.model.id,
-          choices: [{ index: 0, finish_reason: "tool_calls", message }]
+          choices: [{ index: 0, finish_reason: "stop", message }]
         };
+      } catch (error) {
+        throw wrapUpstreamError(error, requestOptions.prompt?.length);
       }
-
-      const message = {
-        role: "assistant",
-        content
-      };
-      if (reasoningContent) {
-        message.reasoning_content = reasoningContent;
-      }
-      return {
-        id: `chatcmpl_${randomUUID()}`,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: requestOptions.model.id,
-        choices: [{ index: 0, finish_reason: "stop", message }]
-      };
     }
   });
 }
@@ -170,11 +186,14 @@ export async function streamOpenAiResponse(options) {
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
+      const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+      const upstreamRequest = { ...requestOptions, prompt };
       const { response: deepseekResponse } = await startCompletion({
         account,
-        requestOptions,
+        requestOptions: upstreamRequest,
         sessionId,
-        debugCtx
+        debugCtx,
+        refFileIds
       });
 
       response.writeHead(200, {
@@ -261,9 +280,10 @@ export async function streamOpenAiResponse(options) {
       }, debugCtx);
 
       if (upstreamError) {
-        debugCtx?.logFinalResponse({ error: upstreamError.text, code: upstreamError.code });
+        const friendlyText = formatUpstreamError(upstreamError.text, requestOptions.prompt?.length);
+        debugCtx?.logFinalResponse({ error: friendlyText, code: upstreamError.code });
         response.write(
-          `data: ${JSON.stringify(buildChunkPayload(completionId, requestOptions.model.id, { content: `[Error: ${upstreamError.text}]` }))}\n\n`
+          `data: ${JSON.stringify(buildChunkPayload(completionId, requestOptions.model.id, { content: `[Error: ${friendlyText}]` }))}\n\n`
         );
         response.write(
           `data: ${JSON.stringify(buildChunkPayload(completionId, requestOptions.model.id, "", "stop"))}\n\n`

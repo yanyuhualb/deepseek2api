@@ -88,14 +88,14 @@ export function filterToolCalls(toolCalls, tools) {
   return filtered.length > 0 ? filtered : null;
 }
 
-export async function startCompletion({ account, requestOptions, sessionId, debugCtx }) {
+export async function startCompletion({ account, requestOptions, sessionId, debugCtx, refFileIds }) {
   const body = Buffer.from(
     JSON.stringify({
       chat_session_id: sessionId,
       parent_message_id: null,
       model_type: requestOptions.model.modelType,
       prompt: requestOptions.prompt,
-      ref_file_ids: [],
+      ref_file_ids: refFileIds ?? [],
       thinking_enabled: requestOptions.model.thinkingEnabled,
       search_enabled: requestOptions.model.searchEnabled,
       preempt: false
