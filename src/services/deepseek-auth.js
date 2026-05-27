@@ -41,7 +41,24 @@ export async function loginToDeepseek({ loginValue, password, deviceId }) {
     body: JSON.stringify(buildLoginPayload(loginValue, password, deviceId))
   });
 
-  const result = await response.json();
+  const rawText = await response.text();
+
+  if (!rawText) {
+    throw new Error(
+      `DeepSeek 登录响应为空（HTTP ${response.status}）。可能是网络被拦截或区域受限，请检查服务器能否访问 chat.deepseek.com。`
+    );
+  }
+
+  let result;
+  try {
+    result = JSON.parse(rawText);
+  } catch {
+    const preview = rawText.slice(0, 200).replace(/\s+/g, " ");
+    throw new Error(
+      `DeepSeek 登录响应不是 JSON（HTTP ${response.status}）。响应预览: ${preview}`
+    );
+  }
+
   if (result.data?.biz_code !== 0) {
     throw new Error(result.msg || result.data?.biz_msg || "DeepSeek login failed");
   }
