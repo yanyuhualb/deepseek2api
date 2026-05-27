@@ -137,6 +137,11 @@ export function createDeepseekDeltaDecoder() {
 }
 
 export function extractContentDelta(payloadText) {
-  const payload = JSON.parse(payloadText);
+  let payload;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch {
+    return "";
+  }
   return extractFragmentText(payload);
 }

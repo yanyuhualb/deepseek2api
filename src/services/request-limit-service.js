@@ -1,6 +1,7 @@
 import { getLocalUserFromOwnerId } from "./user-service.js";
 
 const RATE_WINDOW_MS = 60_000;
+const CLEANUP_INTERVAL_MS = 5 * 60_000;
 const activeRequests = new Map();
 const requestHistory = new Map();
 
@@ -13,7 +14,11 @@ function createTaggedError(message, code) {
 function pruneHistory(ownerId, now) {
   const current = requestHistory.get(ownerId) ?? [];
   const next = current.filter((timestamp) => now - timestamp < RATE_WINDOW_MS);
-  requestHistory.set(ownerId, next);
+  if (next.length === 0) {
+    requestHistory.delete(ownerId);
+  } else {
+    requestHistory.set(ownerId, next);
+  }
   return next;
 }
 
@@ -75,3 +80,11 @@ export async function withOwnerRequestLimit(ownerId, action) {
     releaseConcurrency(ownerId);
   }
 }
+
+// 定期回收，避免长期不活跃 owner 的历史记录无限期保留
+setInterval(() => {
+  const now = Date.now();
+  for (const ownerId of requestHistory.keys()) {
+    pruneHistory(ownerId, now);
+  }
+}, CLEANUP_INTERVAL_MS).unref?.();

@@ -51,17 +51,29 @@ export function parseCookies(request) {
 }
 
 export function setCookie(response, name, value, maxAgeSeconds) {
-  response.setHeader(
-    "set-cookie",
-    `${name}=${encodeURIComponent(value)}; HttpOnly; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax`
-  );
+  const segments = [
+    `${name}=${encodeURIComponent(value)}`,
+    "HttpOnly",
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+    "SameSite=Lax"
+  ];
+
+  if (config.isProduction) {
+    segments.push("Secure");
+  }
+
+  response.setHeader("set-cookie", segments.join("; "));
 }
 
 export function clearCookie(response, name) {
-  response.setHeader(
-    "set-cookie",
-    `${name}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
-  );
+  const segments = [`${name}=`, "HttpOnly", "Path=/", "Max-Age=0", "SameSite=Lax"];
+
+  if (config.isProduction) {
+    segments.push("Secure");
+  }
+
+  response.setHeader("set-cookie", segments.join("; "));
 }
 
 export async function readRequestBody(request) {

@@ -5,12 +5,10 @@ import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js
 import {
   checkForToolCallMarker,
   collectTaggedContent,
+  computeSafeFlushEnd,
   consumeTaggedStream,
   filterToolCalls,
-  isPartialMarker,
   startCompletion,
-  TOOL_CALL_MARKERS,
-  MARKER_START_CHARS,
   withCompletionSession
 } from "./completion-core.js";
 import { resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
@@ -322,20 +320,7 @@ export async function streamAnthropicMessage({ response, account, body, deleteAf
           return;
         }
 
-        let safeEnd = textAccumulator.length;
-        if (isPartialMarker(textAccumulator)) {
-          for (let i = Math.max(0, textAccumulator.length - 20); i < textAccumulator.length; i++) {
-            if (!MARKER_START_CHARS.includes(textAccumulator[i])) continue;
-            const tail = textAccumulator.slice(i);
-            let isPartial = false;
-            for (const marker of TOOL_CALL_MARKERS) {
-              if (marker.startsWith(tail)) { isPartial = true; break; }
-            }
-            if (tail.startsWith("```")) { isPartial = true; }
-            if (tail.startsWith('{"na')) { isPartial = true; }
-            if (isPartial) { safeEnd = i; break; }
-          }
-        }
+        let safeEnd = computeSafeFlushEnd(textAccumulator);
         const toStream = textAccumulator.slice(0, safeEnd);
         textAccumulator = textAccumulator.slice(safeEnd);
 

@@ -15,9 +15,10 @@
 | Responses API 层 | 提供 `POST /v1/responses`，兼容 OpenAI Responses API 格式 |
 | 工具调用解析 | 自动识别多种格式的工具调用（XML 标签、代码块、纯文本标记等）并转换为标准格式 |
 | 原生代理层 | 提供 `/proxy/*` 白名单转发，便于调试和复用 DeepSeek Web 接口 |
-| 调试模式 | 可选的请求追踪与日志记录，敏感信息自动脱敏 |
+| 调试模式 | 可选的请求追踪与日志记录，敏感信息自动脱敏，可选哈希化对话内容 |
 | 管理后台 | 注册开关、邀请码生成 / 删除、用户启用 / 禁用 / 删除、并发 / 速率限制 |
 | 无痕模式 | 支持全局或用户级无痕，会话完成后自动清理 |
+| 安全特性 | 密码 AES 加密、CORS 白名单、登录限流、上游超时、Cookie Secure、PoW WASM 本地缓存 + 哈希校验 |
 | 部署形态 | 无第三方 npm 运行时依赖，`npm start` 即可启动 |
 
 ## 项目特点
@@ -76,6 +77,11 @@ PORT=3000
 DEBUG=true
 APP_ADMIN_USERNAME=
 APP_ADMIN_PASSWORD=
+
+# 生产环境推荐配置
+NODE_ENV=production
+SECRET_ENCRYPTION_KEY=
+ALLOWED_ORIGINS=
 ```
 
 ### 3) 打开控制台
@@ -89,15 +95,37 @@ APP_ADMIN_PASSWORD=
 
 ## 环境变量
 
+### 基础
+
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `3000` | 服务监听端口 |
+| `NODE_ENV` | 空 | 设为 `production` 后启用 Cookie `Secure` 标志、生产错误脱敏 |
 | `DEBUG` | `false` | 启用调试模式，记录请求追踪日志 |
+| `DEBUG_SANITIZE` | `false` | 调试日志中的对话内容用 SHA-256 摘要替代原文 |
 | `TOOL_CALL_MODEL` | 空 | 工具调用使用的模型 ID，留空则使用请求原始模型 |
 | `APP_ADMIN_USERNAME` | 空 | 管理员用户名 |
 | `APP_ADMIN_PASSWORD` | 空 | 管理员密码 |
 
 只有同时设置 `APP_ADMIN_USERNAME` 和 `APP_ADMIN_PASSWORD` 时，管理员入口才会启用。
+
+### 安全 / 加密
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SECRET_ENCRYPTION_KEY` | 空 | 启用 DeepSeek 账号密码 AES-256-GCM 加密存储；缺失时密码以明文落盘并打印警告 |
+| `ALLOWED_ORIGINS` | 空 | CORS 受信源白名单，逗号分隔。生产环境强烈建议显式配置；为空且 `NODE_ENV=production` 时跨域请求将被拒绝 |
+| `POW_WASM_SHA256` | 空 | 下载的 PoW WASM 文件 SHA-256 期望值，配置后启用校验 |
+
+### 速率与超时
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `LOGIN_RATE_LIMIT_MAX_ATTEMPTS` | `5` | 登录失败次数上限 |
+| `LOGIN_RATE_LIMIT_WINDOW_MS` | `60000` | 登录失败计数窗口（毫秒） |
+| `LOGIN_RATE_LIMIT_BLOCK_MS` | `900000` | 触发上限后临时封禁时长（毫秒） |
+| `UPSTREAM_REQUEST_TIMEOUT_MS` | `30000` | 上游非流式请求超时（毫秒） |
+| `UPSTREAM_STREAM_TIMEOUT_MS` | `300000` | 上游流式请求超时（毫秒） |
 
 ## 控制台能力
 
@@ -129,6 +157,20 @@ APP_ADMIN_PASSWORD=
 - 管理员可以开启全局无痕
 - 普通用户可以只为自己开启无痕
 - 开启后，聊天完成后会自动清理相关 DeepSeek 会话
+
+## 生产部署建议
+
+部署到公网或多用户环境前，建议执行以下检查：
+
+1. 设置 `NODE_ENV=production`：启用 Cookie `Secure` 标志和生产错误脱敏
+2. 设置 `SECRET_ENCRYPTION_KEY`（推荐 32 字节以上随机字符串）：将 DeepSeek 账号密码以 AES-256-GCM 加密落盘
+3. 设置 `ALLOWED_ORIGINS=https://your-domain.com`：避免任意源跨域读取认证响应
+4. 通过 HTTPS 反向代理（Nginx / Caddy）暴露服务，避免 cookie 在明文链路上传输
+5. 如果对外暴露 `/api/auth/login`，可调小 `LOGIN_RATE_LIMIT_MAX_ATTEMPTS` 或调大 `LOGIN_RATE_LIMIT_BLOCK_MS`
+6. 启用 `DEBUG` 时同时设置 `DEBUG_SANITIZE=true`，避免完整对话内容落盘
+7. 可选：下载 `https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm` 计算其 SHA-256，设置到 `POW_WASM_SHA256` 启用校验
+
+> 现有 `data/app.json` 内的明文密码会在下一次 token 刷新或账号更新时自动加密；如希望立即迁移，可重新绑定一次账号。
 
 ## API 兼容接口
 
@@ -282,21 +324,26 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 
 ```text
 .
-├─ data/                  # 运行时数据目录
+├─ data/                  # 运行时数据目录（app.json、wasm 缓存等）
 ├─ logs/                  # 调试日志目录（启用 DEBUG 时生成）
 ├─ public/                # 前端控制台静态资源
+│  └─ html-escape.js      # 共享 HTML 转义工具
 ├─ src/
 │  ├─ routes/             # 公共 / 私有 / 管理 / 代理 / v1 路由
 │  ├─ services/           # 账号、用户、桥接、PoW、限流等核心逻辑
-│  │  ├─ openai-bridge.js      # OpenAI Chat Completions 桥接
-│  │  ├─ anthropic-bridge.js   # Anthropic Messages 桥接
-│  │  ├─ responses-bridge.js   # OpenAI Responses API 桥接
-│  │  └─ completion-core.js    # 流式处理与工具调用检测公共逻辑
-│  ├─ storage/            # JSON 文件存储
+│  │  ├─ openai-bridge.js          # OpenAI Chat Completions 桥接
+│  │  ├─ anthropic-bridge.js       # Anthropic Messages 桥接
+│  │  ├─ responses-bridge.js       # OpenAI Responses API 桥接
+│  │  ├─ completion-core.js        # 流式处理与工具调用检测公共逻辑
+│  │  ├─ login-rate-limit-service.js  # 登录速率限制
+│  │  └─ request-limit-service.js  # 用户级并发 / 频率限制
+│  ├─ storage/            # JSON 文件存储（原子 rename 写入）
 │  └─ utils/
 │     ├─ tool-prompt.js         # 工具调用多格式解析
 │     ├─ debug-logger.js        # 调试日志与请求追踪
 │     ├─ deepseek-sse.js        # DeepSeek SSE 解码器
+│     ├─ secret-cipher.js       # AES-256-GCM 密码加密
+│     ├─ fetch-with-timeout.js  # 上游 fetch 超时封装
 │     ├─ prompt.js              # 系统提示词生成
 │     └─ http.js, id.js         # HTTP、ID 工具
 ├─ .env.example

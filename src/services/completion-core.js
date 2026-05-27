@@ -41,6 +41,30 @@ export function isPartialMarker(text) {
   return false;
 }
 
+// 计算当前 textBuffer 中可以安全输出（不会切断潜在 tool_call marker）的位置。
+// 流式输出过程中，要避免在标记前缀被切开时提前 flush 出去。
+export function computeSafeFlushEnd(textBuffer) {
+  if (!isPartialMarker(textBuffer)) {
+    return textBuffer.length;
+  }
+
+  for (let i = Math.max(0, textBuffer.length - 20); i < textBuffer.length; i++) {
+    if (!MARKER_START_CHARS.includes(textBuffer[i])) continue;
+    const tail = textBuffer.slice(i);
+    let isPartial = false;
+    for (const marker of TOOL_CALL_MARKERS) {
+      if (marker.startsWith(tail)) { isPartial = true; break; }
+    }
+    if (tail.startsWith("```")) { isPartial = true; }
+    if (tail.startsWith('{"na')) { isPartial = true; }
+    if (isPartial) {
+      return i;
+    }
+  }
+
+  return textBuffer.length;
+}
+
 export function filterToolCalls(toolCalls, tools) {
   if (!toolCalls || !tools) return null;
 

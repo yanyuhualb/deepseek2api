@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 import { config } from "../config.js";
 
@@ -66,10 +66,10 @@ function normalizeState(value) {
   };
 }
 
-export function readStore() {
+function readStateFromDisk() {
   if (!existsSync(config.dataFile)) {
     const state = defaultState();
-    writeStore(state);
+    writeStateToDisk(state);
     return state;
   }
 
@@ -77,13 +77,26 @@ export function readStore() {
   return normalizeState(JSON.parse(raw));
 }
 
-export function writeStore(state) {
-  writeFileSync(config.dataFile, JSON.stringify(normalizeState(state), null, 2));
+function writeStateToDisk(state) {
+  const tempFile = `${config.dataFile}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tempFile, JSON.stringify(normalizeState(state), null, 2));
+  renameSync(tempFile, config.dataFile);
 }
 
+export function readStore() {
+  return readStateFromDisk();
+}
+
+export function writeStore(state) {
+  writeStateToDisk(state);
+}
+
+// updateStore 在 Node.js 单线程同步路径上是原子的：readFileSync + writeFileSync
+// 之间没有 await，不会与其他 updateStore 调用交错。
+// 原子 rename 写入额外保证：进程崩溃也不会留下半写入的损坏文件。
 export function updateStore(updater) {
-  const current = readStore();
+  const current = readStateFromDisk();
   const next = updater(current);
-  writeStore(next);
+  writeStateToDisk(next);
   return next;
 }

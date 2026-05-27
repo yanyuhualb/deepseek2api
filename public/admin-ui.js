@@ -1,9 +1,4 @@
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
+import { escapeHtml } from "/html-escape.js";
 
 function createEmptyState(title, description) {
   return `

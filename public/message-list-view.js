@@ -1,4 +1,5 @@
 import { renderMessageContent } from "/deepseek-message.js";
+import { escapeHtml } from "/html-escape.js";
 
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const MESSAGE_SECTION_SELECTOR = "[data-message-section]";
@@ -15,13 +16,6 @@ const ROLE_LABELS = Object.freeze({
   SYSTEM: "系统",
   USER: "用户"
 });
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
 
 function createEmptyState(title, description) {
   return `

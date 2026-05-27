@@ -1,5 +1,26 @@
 import { updateStore, readStore } from "../storage/store.js";
 import { createId } from "../utils/id.js";
+import { decryptSecret, encryptSecret } from "../utils/secret-cipher.js";
+
+function decryptAccount(account) {
+  if (!account) {
+    return account;
+  }
+  return {
+    ...account,
+    password: decryptSecret(account.password)
+  };
+}
+
+function encryptAccount(account) {
+  if (!account) {
+    return account;
+  }
+  return {
+    ...account,
+    password: encryptSecret(account.password)
+  };
+}
 
 function withUpdatedRecord(account, nextFields) {
   return {
@@ -10,7 +31,7 @@ function withUpdatedRecord(account, nextFields) {
 }
 
 export function listAccounts() {
-  return readStore().accounts;
+  return readStore().accounts.map(decryptAccount);
 }
 
 export function getAccountById(accountId) {
@@ -51,11 +72,13 @@ export function saveAccount(accountInput) {
         ...accountInput
       };
 
+  const persistedAccount = encryptAccount(account);
+
   updateStore((state) => ({
     ...state,
     accounts: existing
-      ? state.accounts.map((entry) => (entry.id === account.id ? account : entry))
-      : [...state.accounts, account]
+      ? state.accounts.map((entry) => (entry.id === persistedAccount.id ? persistedAccount : entry))
+      : [...state.accounts, persistedAccount]
   }));
 
   return account;
@@ -76,5 +99,5 @@ export function deleteAccountById(accountId) {
     };
   });
 
-  return deletedAccount;
+  return decryptAccount(deletedAccount);
 }

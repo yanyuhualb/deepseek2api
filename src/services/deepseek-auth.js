@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import { saveAccount } from "./account-service.js";
 
 function isEmail(loginValue) {
@@ -34,7 +35,7 @@ function buildLoginPayload(loginValue, password, deviceId) {
 }
 
 export async function loginToDeepseek({ loginValue, password, deviceId }) {
-  const response = await fetch(`${config.deepseekBaseUrl}/api/v0/users/login`, {
+  const response = await fetchWithTimeout(`${config.deepseekBaseUrl}/api/v0/users/login`, {
     method: "POST",
     headers: createBaseHeaders("", { "content-type": "application/json" }),
     body: JSON.stringify(buildLoginPayload(loginValue, password, deviceId))

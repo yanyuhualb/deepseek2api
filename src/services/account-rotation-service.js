@@ -25,3 +25,7 @@ export function takeRoundRobinAccount(apiKeyRecord) {
   nextAccountIndexes.set(apiKeyRecord.id, (currentIndex + 1) % accounts.length);
   return accounts[currentIndex];
 }
+
+export function forgetApiKeyRotation(apiKeyId) {
+  nextAccountIndexes.delete(apiKeyId);
+}

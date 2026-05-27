@@ -1,6 +1,12 @@
 import { config } from "../config.js";
 import { buildAnonymousPayload, buildSessionPayload } from "../services/app-payload-service.js";
 import { loginAsAdmin, loginAsLocalUser, registerLocalUserSession } from "../services/auth-service.js";
+import {
+  assertLoginAllowed,
+  recordLoginFailure,
+  recordLoginSuccess,
+  resolveLoginIdentifier
+} from "../services/login-rate-limit-service.js";
 import { deleteSession } from "../services/session-service.js";
 import { clearCookie, parseJsonBody, readRequestBody, sendError, sendJson, setCookie } from "../utils/http.js";
 
@@ -13,11 +19,29 @@ function sendSessionPayload(response, session) {
   sendJson(response, 200, buildSessionPayload(session));
 }
 
+function sendLoginError(response, statusCode, message) {
+  sendError(response, statusCode, message);
+}
+
 async function handleLoginRequest(request, response) {
   const body = await readJsonRequest(request);
+  const identifier = resolveLoginIdentifier(request, body.username);
+
+  try {
+    assertLoginAllowed(identifier);
+  } catch (error) {
+    if (error.code === "LOGIN_RATE_LIMIT") {
+      response.setHeader("retry-after", Math.ceil((error.retryAfterMs ?? 60_000) / 1000));
+      sendLoginError(response, 429, error.message);
+      return true;
+    }
+    throw error;
+  }
+
   const adminSession = loginAsAdmin(body.username, body.password);
 
   if (adminSession) {
+    recordLoginSuccess(identifier);
     sendSessionPayload(response, adminSession);
     return true;
   }
@@ -25,13 +49,16 @@ async function handleLoginRequest(request, response) {
   try {
     const localSession = loginAsLocalUser(body.username, body.password);
     if (!localSession) {
-      sendError(response, 401, "Invalid username or password");
+      recordLoginFailure(identifier);
+      sendLoginError(response, 401, "Invalid username or password");
       return true;
     }
 
+    recordLoginSuccess(identifier);
     sendSessionPayload(response, localSession);
   } catch (error) {
-    sendError(response, 403, error.message);
+    recordLoginFailure(identifier);
+    sendLoginError(response, 403, error.message);
   }
 
   return true;

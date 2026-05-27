@@ -5,12 +5,10 @@ import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js
 import {
   checkForToolCallMarker,
   collectTaggedContent,
+  computeSafeFlushEnd,
   consumeTaggedStream,
   filterToolCalls,
-  isPartialMarker,
   startCompletion,
-  TOOL_CALL_MARKERS,
-  MARKER_START_CHARS,
   withCompletionSession
 } from "./completion-core.js";
 import { resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
@@ -361,20 +359,7 @@ export async function streamResponsesResult({ response, account, body, deleteAft
           return;
         }
 
-        let safeEnd = state.textAccumulator.length;
-        if (isPartialMarker(state.textAccumulator)) {
-          for (let i = Math.max(0, state.textAccumulator.length - 20); i < state.textAccumulator.length; i++) {
-            if (!MARKER_START_CHARS.includes(state.textAccumulator[i])) continue;
-            const tail = state.textAccumulator.slice(i);
-            let isPartial = false;
-            for (const marker of TOOL_CALL_MARKERS) {
-              if (marker.startsWith(tail)) { isPartial = true; break; }
-            }
-            if (tail.startsWith("```")) { isPartial = true; }
-            if (tail.startsWith('{"na')) { isPartial = true; }
-            if (isPartial) { safeEnd = i; break; }
-          }
-        }
+        let safeEnd = computeSafeFlushEnd(state.textAccumulator);
         const toStream = state.textAccumulator.slice(0, safeEnd);
         state.textAccumulator = state.textAccumulator.slice(safeEnd);
         if (toStream) {

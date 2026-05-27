@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import { config } from "../config.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 let wasmExportsPromise;
 let cachedBytes;
@@ -64,15 +69,89 @@ function passString(value, malloc, realloc) {
   return pointer;
 }
 
+function getLocalWasmCachePath() {
+  const fileName = config.powWasmUrl.split("/").pop() || "deepseek_pow.wasm";
+  return join(process.cwd(), "data", "wasm-cache", fileName);
+}
+
+function getExpectedWasmHash() {
+  return process.env.POW_WASM_SHA256 || null;
+}
+
+function computeSha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function readLocalWasmCache() {
+  const cachePath = getLocalWasmCachePath();
+  if (!existsSync(cachePath)) {
+    return null;
+  }
+  try {
+    return readFileSync(cachePath);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalWasmCache(buffer) {
+  const cachePath = getLocalWasmCachePath();
+  try {
+    mkdirSync(dirname(cachePath), { recursive: true });
+    const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tempPath, buffer);
+    renameSync(tempPath, cachePath);
+  } catch (error) {
+    console.warn("[pow-solver] 写入本地 WASM 缓存失败:", error.message);
+  }
+}
+
+function verifyHash(buffer) {
+  const expected = getExpectedWasmHash();
+  if (!expected) {
+    return true;
+  }
+  const actual = computeSha256(buffer);
+  if (actual !== expected) {
+    console.error(`[pow-solver] WASM 哈希校验失败: 期望 ${expected}, 实际 ${actual}`);
+    return false;
+  }
+  return true;
+}
+
+async function fetchAndInstantiateWasm() {
+  const cached = readLocalWasmCache();
+  if (cached && verifyHash(cached)) {
+    const { instance } = await WebAssembly.instantiate(cached, { wbg: {} });
+    return instance.exports;
+  }
+
+  const response = await fetchWithTimeout(config.powWasmUrl, {}, { timeoutMs: 30_000 });
+  if (!response.ok) {
+    throw new Error(`下载 WASM 失败: HTTP ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (!verifyHash(buffer)) {
+    throw new Error("WASM 哈希校验失败");
+  }
+
+  writeLocalWasmCache(buffer);
+  const { instance } = await WebAssembly.instantiate(buffer, { wbg: {} });
+  return instance.exports;
+}
+
 async function loadWasm() {
   if (wasmExportsPromise) {
     return wasmExportsPromise;
   }
 
-  wasmExportsPromise = fetch(config.powWasmUrl)
-    .then((response) => response.arrayBuffer())
-    .then((bytes) => WebAssembly.instantiate(bytes, { wbg: {} }))
-    .then(({ instance }) => instance.exports);
+  wasmExportsPromise = fetchAndInstantiateWasm().catch((error) => {
+    wasmExportsPromise = null;
+    throw error;
+  });
 
   return wasmExportsPromise;
 }

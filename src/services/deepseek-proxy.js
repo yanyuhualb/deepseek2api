@@ -1,6 +1,13 @@
 import { config } from "../config.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import { solvePowChallenge } from "./pow-solver.js";
 import { createBaseHeaders, refreshAccountToken } from "./deepseek-auth.js";
+
+const STREAMING_PATHS = new Set([
+  "/api/v0/chat/completion",
+  "/api/v0/chat/regenerate",
+  "/api/v0/chat/resume_stream"
+]);
 
 function buildTargetUrl(path, query) {
   const url = new URL(path, config.deepseekBaseUrl);
@@ -15,7 +22,7 @@ function buildTargetUrl(path, query) {
 }
 
 async function createPowHeader(account, path) {
-  const response = await fetch(`${config.deepseekBaseUrl}/api/v0/chat/create_pow_challenge`, {
+  const response = await fetchWithTimeout(`${config.deepseekBaseUrl}/api/v0/chat/create_pow_challenge`, {
     method: "POST",
     headers: createBaseHeaders(account.token, { "content-type": "application/json" }),
     body: JSON.stringify({ target_path: path })
@@ -47,11 +54,15 @@ async function performRequest({ account, method, path, query, body, headers }) {
     finalHeaders["x-ds-pow-response"] = await createPowHeader(account, path);
   }
 
-  return fetch(buildTargetUrl(path, query), {
-    method,
-    headers: finalHeaders,
-    body
-  });
+  return fetchWithTimeout(
+    buildTargetUrl(path, query),
+    {
+      method,
+      headers: finalHeaders,
+      body
+    },
+    { streaming: STREAMING_PATHS.has(path) }
+  );
 }
 
 async function maybeRefreshAccount(response, account) {

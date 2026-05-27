@@ -1,5 +1,6 @@
 import { readStore, updateStore } from "../storage/store.js";
 import { createApiKey, createId, hashValue } from "../utils/id.js";
+import { forgetApiKeyRotation } from "./account-rotation-service.js";
 
 function sanitizeKey(record) {
   const { keyHash, ...rest } = record;
@@ -42,6 +43,7 @@ export function deleteApiKeyRecord(ownerId, keyId) {
       (record) => !(record.id === keyId && record.ownerId === ownerId)
     )
   }));
+  forgetApiKeyRotation(keyId);
 }
 
 export function getApiKeyRecord(key) {

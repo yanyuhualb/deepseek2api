@@ -1,4 +1,5 @@
 ﻿import { resolveAccountLabel } from "/account-display.js";
+import { escapeHtml } from "/html-escape.js";
 const TAB_LABELS = Object.freeze({
   accounts: "账号",
   admin: "管理",
@@ -13,12 +14,6 @@ const FILE_STATUS_LABELS = Object.freeze({
   SUCCESS: "已完成",
   UPLOADING: "上传中"
 });
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;

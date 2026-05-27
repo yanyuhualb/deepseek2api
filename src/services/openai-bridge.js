@@ -5,12 +5,10 @@ import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js
 import {
   checkForToolCallMarker,
   collectTaggedContent,
+  computeSafeFlushEnd,
   consumeTaggedStream,
   filterToolCalls,
-  isPartialMarker,
   startCompletion,
-  TOOL_CALL_MARKERS,
-  MARKER_START_CHARS,
   withCompletionSession
 } from "./completion-core.js";
 import { assertNoLegacySearchOptions, resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
@@ -249,20 +247,7 @@ export async function streamOpenAiResponse(options) {
 
         if (trySwitchToToolCall()) return;
 
-        let safeEnd = textBuffer.length;
-        if (isPartialMarker(textBuffer)) {
-          for (let i = Math.max(0, textBuffer.length - 20); i < textBuffer.length; i++) {
-            if (!MARKER_START_CHARS.includes(textBuffer[i])) continue;
-            const tail = textBuffer.slice(i);
-            let isPartial = false;
-            for (const marker of TOOL_CALL_MARKERS) {
-              if (marker.startsWith(tail)) { isPartial = true; break; }
-            }
-            if (tail.startsWith("```")) { isPartial = true; }
-            if (tail.startsWith('{"na')) { isPartial = true; }
-            if (isPartial) { safeEnd = i; break; }
-          }
-        }
+        const safeEnd = computeSafeFlushEnd(textBuffer);
 
         const toStream = textBuffer.slice(0, safeEnd);
         textBuffer = textBuffer.slice(safeEnd);

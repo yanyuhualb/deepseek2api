@@ -1,10 +1,30 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 
 export const isDebugEnabled = !!config.debug;
+const SANITIZE_TEXT = !!config.debugSanitize;
+const TEXT_PREVIEW_MAX = 500;
 
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "x-api-key", "x-ds-pow-response"]);
+
+function hashText(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
+}
+
+function sanitizeText(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return text;
+  }
+  if (SANITIZE_TEXT) {
+    return `[sanitized:sha256:${hashText(text)}:length=${text.length}]`;
+  }
+  if (text.length > TEXT_PREVIEW_MAX) {
+    return `${text.slice(0, TEXT_PREVIEW_MAX)}... (truncated, total ${text.length} chars)`;
+  }
+  return text;
+}
 
 function maskHeaders(headers) {
   if (!headers || typeof headers !== "object") return headers;
@@ -149,8 +169,8 @@ export function createRequestDebugContext(requestId, bridge) {
             toolDetected: toolDetection?.markerFound ?? false,
             toolCalls: toolDetection?.toolCalls ?? null,
             finishReason: finalResponse?.finishReason ?? finalResponse?.stop_reason ?? null,
-            thinking: deltaTexts.thinking || null,
-            content: deltaTexts.response || null
+            thinking: deltaTexts.thinking ? sanitizeText(deltaTexts.thinking) : null,
+            content: deltaTexts.response ? sanitizeText(deltaTexts.response) : null
           },
           error
         });
