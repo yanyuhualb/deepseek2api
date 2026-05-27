@@ -93,8 +93,8 @@ export const config = Object.freeze({
     "/api/v0/users/update_settings"
   ]),
   deepseekHeaders: Object.freeze({
-    appVersion: "20241129.1",
-    clientVersion: "1.8.0",
+    appVersion: "2.0.0",
+    clientVersion: "2.0.0",
     clientPlatform: "web",
     locale: "zh_CN",
     timezoneOffset: "28800"
