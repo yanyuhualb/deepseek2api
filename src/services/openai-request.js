@@ -11,7 +11,9 @@ const BASE_OPENAI_MODELS = Object.freeze([
   Object.freeze({ id: "deepseek-v4-flash", modelType: "default", thinkingEnabled: false }),
   Object.freeze({ id: "deepseek-v4-reasoner-flash", modelType: "default", thinkingEnabled: true }),
   Object.freeze({ id: "deepseek-v4-pro", modelType: "expert", thinkingEnabled: false }),
-  Object.freeze({ id: "deepseek-v4-reasoner-pro", modelType: "expert", thinkingEnabled: true })
+  Object.freeze({ id: "deepseek-v4-reasoner-pro", modelType: "expert", thinkingEnabled: true }),
+  Object.freeze({ id: "deepseek-v4-vision", modelType: "vision", thinkingEnabled: false, supportsSearch: false, supportsImages: true }),
+  Object.freeze({ id: "deepseek-v4-vision-reasoner", modelType: "vision", thinkingEnabled: true, supportsSearch: false, supportsImages: true })
 ]);
 
 function createModelVariant(baseModel, searchEnabled) {
@@ -23,10 +25,11 @@ function createModelVariant(baseModel, searchEnabled) {
 }
 
 const OPENAI_MODELS = Object.freeze(
-  BASE_OPENAI_MODELS.flatMap((model) => [
-    createModelVariant(model, false),
-    createModelVariant(model, true)
-  ])
+  BASE_OPENAI_MODELS.flatMap((model) =>
+    model.supportsSearch === false
+      ? [createModelVariant(model, false)]
+      : [createModelVariant(model, false), createModelVariant(model, true)]
+  )
 );
 
 const OPENAI_MODEL_MAP = Object.freeze(

@@ -1084,13 +1084,16 @@ You have access to the following tools. To call a tool, you MUST output EXACTLY 
 CRITICAL RULES:
 - You MUST ONLY call tools from the list below.
 - You MUST use the EXACT tool name as shown (e.g. "${exampleTool}"), NOT abbreviated forms.
+- Treat tool names as opaque identifiers. Do NOT convert them to camelCase, snake_case, shorter display names, package names, or operation names.
+- For MCP/Cherry-style names such as "ServerPrefix__fetch_markdown" or "CherryFetchFetchMarkdown", the entire string is the tool name. Do NOT call "fetch_markdown" or "fetchMarkdown".
+- If a tool argument asks for another tool name (for example "name", "tool", or "tool_name"), its value MUST also be the exact full tool name from the list below.
 - Do NOT call any tool that is not listed, even if it was mentioned in previous conversation.
 - Each tool call MUST be on its OWN separate line.
 - Do NOT wrap tool calls in code blocks or any other formatting.
 - Do NOT use XML-style parameter tags (e.g. <parameter name="...">).
 - Do NOT output tool calls inside thinking or reasoning blocks. Tool calls MUST only appear in the final response.
 - Tool descriptions contain ALL information needed to use them. Do NOT read files, documentation, or use other tools to "learn" or "figure out" how a tool works.
-- When a user request clearly matches a tool's purpose, call that tool DIRECTLY. Do NOT use file-reading or exploratory tools as an intermediate step.
+- When a user request clearly matches a tool's purpose, call that exact tool DIRECTLY. Do NOT use list, inspect, file-reading, or other exploratory tools as an intermediate step.
 
 ## Exact Tool Names
 

@@ -4,6 +4,7 @@ node_modules/
 .playwright-mcp/
 data/app.json
 data/*.log
+data/wasm-cache/
 logs/
 release/
 Thumbs.db

@@ -5,6 +5,7 @@ import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from 
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
+  collectExternalToolNameAliasesFromMessages,
   collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
@@ -112,6 +113,7 @@ function resolveResponsesRequest(body) {
   const instructions = [body.instructions, toolPrompt].filter(Boolean).join("\n\n") || undefined;
   const input = body.input ?? body.messages;
   const messages = normalizeResponsesInput(input, instructions);
+  const externalToolNameAliases = collectExternalToolNameAliasesFromMessages(messages);
   const resolvedModel = resolveOpenAiModel(body.model);
   const model = tools?.length ? resolveToolCallModel(resolvedModel) : resolvedModel;
 
@@ -122,6 +124,7 @@ function resolveResponsesRequest(body) {
     prompt,
     overflowText,
     overflowCount,
+    externalToolNameAliases,
     tools
   };
 }
@@ -190,7 +193,7 @@ export async function collectResponsesResult({ account, body, deleteAfterFinish,
 
         const rawToolCalls = extractToolCalls(content, debugCtx);
         const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools)
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
           : rawToolCalls;
 
         const output = buildResponsesOutput(toolCalls, content, reasoningContent);
@@ -420,7 +423,9 @@ export async function streamResponsesResult({ response, account, body, deleteAft
 
       if (state.toolCallDetected) {
         const rawToolCalls = extractToolCalls(state.toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
+          : rawToolCalls;
         state.toolCalls = toolCalls;
         debugCtx?.logToolDetection({
           toolCallBufferLength: state.toolCallBuffer.length,

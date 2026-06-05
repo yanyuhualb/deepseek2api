@@ -5,6 +5,7 @@ import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from 
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
+  collectExternalToolNameAliasesFromMessages,
   collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
@@ -111,6 +112,7 @@ function resolveAnthropicRequest(body) {
   const allMessages = combinedSystem
     ? [{ role: "system", content: combinedSystem }, ...messages]
     : messages;
+  const externalToolNameAliases = collectExternalToolNameAliasesFromMessages(allMessages);
 
   const resolvedModel = resolveOpenAiModel(body.model);
   const model = tools?.length ? resolveToolCallModel(resolvedModel) : resolvedModel;
@@ -122,6 +124,7 @@ function resolveAnthropicRequest(body) {
     prompt,
     overflowText,
     overflowCount,
+    externalToolNameAliases,
     tools,
     modelName: body.model ?? "deepseek-chat-fast"
   };
@@ -176,7 +179,7 @@ export async function collectAnthropicMessage({ account, body, deleteAfterFinish
 
         const rawToolCalls = extractToolCalls(content, debugCtx);
         const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools)
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
           : rawToolCalls;
 
         const contentBlocks = formatAnthropicContent(toolCalls, content, reasoningContent);
@@ -393,7 +396,9 @@ export async function streamAnthropicMessage({ response, account, body, deleteAf
 
       if (toolCallDetected) {
         const rawToolCalls = extractToolCalls(toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
+          : rawToolCalls;
         debugCtx?.logToolDetection({
           toolCallBufferLength: toolCallBuffer.length,
           rawToolCallCount: rawToolCalls?.length ?? 0,

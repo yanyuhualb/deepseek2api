@@ -231,6 +231,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 - 默认模型：`deepseek-chat-fast`
 - 联网能力通过模型后缀 `-search` 控制
 - 不支持 `web_search_options`；请改用 `*-search` 模型
+- 识图模型：`deepseek-v4-vision` / `deepseek-v4-vision-reasoner`，仅这两个 id 接受 `messages[].content` 中的 `image_url`（支持 `data:` 与 `http(s):` URL），其它模型收到图片会返回 400；识图模型不支持联网，因此无 `-search` 变体
 
 <details>
 <summary>展开查看支持的模型 ID</summary>
@@ -251,6 +252,8 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 - `deepseek-v4-pro-search`
 - `deepseek-v4-reasoner-pro`
 - `deepseek-v4-reasoner-pro-search`
+- `deepseek-v4-vision`
+- `deepseek-v4-vision-reasoner`
 
 </details>
 

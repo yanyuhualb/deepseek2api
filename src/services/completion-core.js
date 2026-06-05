@@ -65,24 +65,208 @@ export function computeSafeFlushEnd(textBuffer) {
   return textBuffer.length;
 }
 
-export function filterToolCalls(toolCalls, tools) {
+function normalizeToolName(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .toLowerCase();
+}
+
+function getToolNameParts(name) {
+  const normalized = normalizeToolName(name);
+  const parts = new Set([normalized]);
+  const splitMarkers = ["__", "_"];
+
+  for (const marker of splitMarkers) {
+    if (normalized.includes(marker)) {
+      const tail = normalized.split(marker).filter(Boolean).pop();
+      if (tail) parts.add(tail);
+    }
+  }
+
+  return [...parts].filter(Boolean);
+}
+
+function addToolAliasEntry(entries, alias, name) {
+  const normalizedAlias = normalizeToolName(alias);
+  if (!normalizedAlias) return;
+  const existing = entries.get(normalizedAlias);
+  if (existing && existing !== name) {
+    entries.set(normalizedAlias, null);
+    return;
+  }
+  entries.set(normalizedAlias, name);
+}
+
+function addDerivedToolAliases(entries, name, canonicalName = name) {
+  const normalized = normalizeToolName(name);
+  addToolAliasEntry(entries, normalized, canonicalName);
+
+  const parts = normalized.split("_").filter(Boolean);
+  for (let i = 0; i < parts.length - 1; i++) {
+    const suffix = parts.slice(i).join("_");
+    if (suffix !== normalized) {
+      addToolAliasEntry(entries, suffix, canonicalName);
+    }
+  }
+
+  const namespacedTail = normalized.split("__").filter(Boolean).pop();
+  if (namespacedTail && namespacedTail !== normalized) {
+    addToolAliasEntry(entries, namespacedTail, canonicalName);
+  }
+}
+
+function buildToolNameAliasMap(validNames) {
+  const entries = new Map();
+
+  for (const name of validNames) {
+    addDerivedToolAliases(entries, name);
+    for (const part of getToolNameParts(name)) {
+      addToolAliasEntry(entries, part, name);
+    }
+  }
+
+  return entries;
+}
+
+export function collectExternalToolNameAliasesFromText(text) {
+  const aliases = new Map();
+  if (typeof text !== "string" || !text) {
+    return aliases;
+  }
+
+  const toolLineRe = /^\s*[-*]\s+`?([A-Za-z][A-Za-z0-9_$.-]*)`?\s*(?:\(([^)\n]+)\))?\s*:/gm;
+  let match;
+  while ((match = toolLineRe.exec(text)) !== null) {
+    const canonical = match[1];
+    const remoteName = match[2]?.trim();
+    addDerivedToolAliases(aliases, canonical);
+
+    if (remoteName) {
+      addToolAliasEntry(aliases, remoteName, canonical);
+      addDerivedToolAliases(aliases, remoteName, canonical);
+      const tail = remoteName.split("__").filter(Boolean).pop();
+      if (tail && tail !== remoteName) {
+        addDerivedToolAliases(aliases, tail, canonical);
+        addToolAliasEntry(aliases, tail, canonical);
+      }
+    }
+  }
+
+  return aliases;
+}
+
+export function collectExternalToolNameAliasesFromMessages(messages) {
+  const aliases = new Map();
+  for (const message of messages ?? []) {
+    const text = typeof message?.content === "string" ? message.content : "";
+    const messageAliases = collectExternalToolNameAliasesFromText(text);
+    for (const [alias, name] of messageAliases) {
+      addToolAliasEntry(aliases, alias, name);
+    }
+  }
+  return aliases;
+}
+
+function findToolSpec(name, tools) {
+  return tools?.find((tool) => tool.function?.name === name) ?? null;
+}
+
+export function resolveToolNameAlias(name, tools) {
+  const validNames = tools?.map((t) => t.function?.name).filter(Boolean) ?? [];
+  if (!name || validNames.length === 0) return null;
+  if (validNames.includes(name)) return name;
+
+  const aliasMap = buildToolNameAliasMap(validNames);
+  const normalized = normalizeToolName(name);
+  const directMatch = aliasMap.get(normalized);
+  if (directMatch) return directMatch;
+
+  const candidates = validNames.filter((validName) => {
+    const validLower = validName.toLowerCase();
+    const nameLower = String(name).toLowerCase();
+    const normalizedValid = normalizeToolName(validName);
+    return validLower.endsWith(`__${nameLower}`)
+      || validLower.endsWith(`.${nameLower}`)
+      || normalizedValid.endsWith(`_${normalized}`)
+      || normalizedValid.endsWith(`__${normalized}`);
+  });
+
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function resolveExternalToolNameAlias(name, aliases) {
+  const resolved = aliases?.get(normalizeToolName(name));
+  return resolved || null;
+}
+
+function shouldNormalizeToolArgumentKey(toolCall, key, tools) {
+  const normalizedKey = normalizeToolName(key);
+  if (["tool", "tool_name", "function", "function_name"].includes(normalizedKey)) {
+    return true;
+  }
+
+  if (normalizedKey !== "name") {
+    return false;
+  }
+
+  const calledToolName = normalizeToolName(toolCall.function.name);
+  if (/(inspect|schema|tool|function)/.test(calledToolName)) {
+    return true;
+  }
+
+  const toolSpec = findToolSpec(toolCall.function.name, tools);
+  const fn = toolSpec?.function;
+  const nameSchema = fn?.parameters?.properties?.[key];
+  const hint = `${fn?.description ?? ""} ${nameSchema?.description ?? ""}`;
+  return /(tool|function|schema|inspect|工具|函数)/i.test(hint);
+}
+
+function normalizeToolArgumentAliases(toolCall, tools, externalToolNameAliases) {
+  let parsedArgs;
+  try {
+    parsedArgs = JSON.parse(toolCall.function.arguments);
+  } catch {
+    return toolCall;
+  }
+
+  if (!parsedArgs || typeof parsedArgs !== "object" || Array.isArray(parsedArgs)) {
+    return toolCall;
+  }
+
+  let changed = false;
+  const nextArgs = { ...parsedArgs };
+  for (const key of ["name", "tool", "toolName", "tool_name", "function", "functionName", "function_name"]) {
+    if (!shouldNormalizeToolArgumentKey(toolCall, key, tools)) continue;
+    if (typeof nextArgs[key] !== "string") continue;
+    const resolved = resolveToolNameAlias(nextArgs[key], tools)
+      || resolveExternalToolNameAlias(nextArgs[key], externalToolNameAliases);
+    if (resolved && resolved !== nextArgs[key]) {
+      nextArgs[key] = resolved;
+      changed = true;
+    }
+  }
+
+  return changed
+    ? { ...toolCall, function: { ...toolCall.function, arguments: JSON.stringify(nextArgs) } }
+    : toolCall;
+}
+
+export function filterToolCalls(toolCalls, tools, externalToolNameAliases = null) {
   if (!toolCalls || !tools) return null;
 
   const validNames = tools.map((t) => t.function?.name).filter(Boolean);
 
   const filtered = toolCalls.map((tc) => {
-    if (validNames.includes(tc.function.name)) return tc;
-
-    const tcLower = tc.function.name.toLowerCase().replace(/-/g, "_");
-    const match = validNames.find((name) => {
-      const nameLower = name.toLowerCase().replace(/-/g, "_");
-      return nameLower === tcLower
-        || name.endsWith("__" + tc.function.name)
-        || name.endsWith("." + tc.function.name);
-    });
-    if (match) return { ...tc, function: { ...tc.function, name: match } };
-
-    return null;
+    const match = resolveToolNameAlias(tc.function.name, tools);
+    if (!match) return null;
+    const normalizedCall = match === tc.function.name
+      ? tc
+      : { ...tc, function: { ...tc.function, name: match } };
+    return normalizeToolArgumentAliases(normalizedCall, tools, externalToolNameAliases);
   }).filter(Boolean);
 
   return filtered.length > 0 ? filtered : null;

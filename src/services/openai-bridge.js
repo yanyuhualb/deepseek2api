@@ -5,6 +5,7 @@ import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from 
 import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
 import {
   checkForToolCallMarker,
+  collectExternalToolNameAliasesFromMessages,
   collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
@@ -13,21 +14,28 @@ import {
   withCompletionSession
 } from "./completion-core.js";
 import { applyOverflowUpload } from "./history-upload.js";
+import { uploadImages } from "./image-upload.js";
 import { assertNoLegacySearchOptions, resolveOpenAiModel, resolveToolCallModel } from "./openai-request.js";
 
-function toContentText(content) {
+function extractContent(content) {
   if (typeof content === "string") {
-    return content;
+    return { text: content, images: [] };
   }
 
   if (!Array.isArray(content)) {
-    return "";
+    return { text: "", images: [] };
   }
 
-  return content
-    .map((item) => (item?.type === "text" ? item.text ?? "" : ""))
-    .filter(Boolean)
-    .join("\n");
+  const texts = [];
+  const images = [];
+  for (const item of content) {
+    if (item?.type === "text" && item.text) {
+      texts.push(item.text);
+    } else if (item?.type === "image_url" && item.image_url?.url) {
+      images.push(item.image_url.url);
+    }
+  }
+  return { text: texts.join("\n"), images };
 }
 
 function normalizeToolCall(toolCall) {
@@ -38,22 +46,26 @@ function normalizeToolCall(toolCall) {
 }
 
 function normalizeMessages(messages) {
-  return (messages ?? []).flatMap((message) => {
+  const images = [];
+  const normalized = (messages ?? []).flatMap((message) => {
     if (message.role === "assistant" && message.tool_calls?.length) {
-      const content = message.content ?? "";
+      const { text: content } = extractContent(message.content ?? "");
       const calls = message.tool_calls.map((tc) =>
         `[Called tool: ${tc.function.name}]\n${normalizeToolCall(tc)}`
       ).join("\n");
       return [{ role: "assistant", content: content ? `${content}\n${calls}` : calls }];
     }
     if (message.role === "tool") {
-      const resultText = toContentText(message.content);
+      const { text: resultText } = extractContent(message.content);
       const toolName = message.name || "unknown";
       const callId = message.tool_call_id ? ` (call ${message.tool_call_id})` : "";
       return [{ role: "tool", content: `[Tool Result for "${toolName}"${callId}]\n${resultText}` }];
     }
-    return [{ role: message.role ?? "user", content: toContentText(message.content) }];
+    const { text, images: msgImages } = extractContent(message.content);
+    images.push(...msgImages);
+    return [{ role: message.role ?? "user", content: text }];
   });
+  return { messages: normalized, images };
 }
 
 function resolveCompletionRequest(body) {
@@ -68,8 +80,19 @@ function resolveCompletionRequest(body) {
   const resolvedModel = resolveOpenAiModel(body?.model);
   const model = (tools?.length) ? resolveToolCallModel(resolvedModel) : resolvedModel;
 
+  const { messages, images } = normalizeMessages(body?.messages);
+  const externalToolNameAliases = collectExternalToolNameAliasesFromMessages(messages);
+
+  if (images.length > 0 && !model.supportsImages) {
+    const error = new Error(
+      `模型 ${model.id} 不支持图片输入，请改用 deepseek-v4-vision 或 deepseek-v4-vision-reasoner`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
   const { prompt, overflowText, overflowCount } = buildPromptWithOverflow(
-    normalizeMessages(body?.messages),
+    messages,
     toolPrompt,
     config.maxPromptChars
   );
@@ -79,7 +102,9 @@ function resolveCompletionRequest(body) {
     prompt,
     overflowText,
     overflowCount,
-    tools: tools || null
+    tools: tools || null,
+    externalToolNameAliases,
+    images
   };
 }
 
@@ -107,13 +132,17 @@ export async function collectOpenAiResponse({ account, body, deleteAfterFinish =
     deleteAfterFinish,
     onComplete: async (sessionId) => {
       try {
+        const imageFileIds = await uploadImages(account, requestOptions.images, debugCtx);
         const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+        const mergedRefFileIds = [...imageFileIds, ...refFileIds];
         const upstreamRequest = { ...requestOptions, prompt };
-        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
+        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds: mergedRefFileIds });
         const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
 
         const rawToolCalls = extractToolCalls(content, debugCtx);
-        const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
+          : rawToolCalls;
 
         if (toolCalls) {
           const message = {
@@ -186,14 +215,16 @@ export async function streamOpenAiResponse(options) {
     body,
     deleteAfterFinish,
     onComplete: async (sessionId) => {
+      const imageFileIds = await uploadImages(account, requestOptions.images, debugCtx);
       const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
+      const mergedRefFileIds = [...imageFileIds, ...refFileIds];
       const upstreamRequest = { ...requestOptions, prompt };
       const { response: deepseekResponse } = await startCompletion({
         account,
         requestOptions: upstreamRequest,
         sessionId,
         debugCtx,
-        refFileIds
+        refFileIds: mergedRefFileIds
       });
 
       response.writeHead(200, {
@@ -316,7 +347,9 @@ export async function streamOpenAiResponse(options) {
 
       if (toolCallDetected) {
         const rawToolCalls = extractToolCalls(toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools ? filterToolCalls(rawToolCalls, requestOptions.tools) : rawToolCalls;
+        const toolCalls = requestOptions.tools
+          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
+          : rawToolCalls;
         debugCtx?.logToolDetection({
           toolCallBufferLength: toolCallBuffer.length,
           rawToolCallCount: rawToolCalls?.length ?? 0,
