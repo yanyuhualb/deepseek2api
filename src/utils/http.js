@@ -5,20 +5,32 @@ import { config } from "../config.js";
 
 const textEncoder = new TextEncoder();
 const publicDirectory = join(process.cwd(), "public");
+const distDirectory = join(process.cwd(), "public-dist");
 const HTML_CACHE_CONTROL = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
 const DYNAMIC_ASSET_CACHE_CONTROL = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
 const STATIC_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const CDN_NO_STORE_CACHE_CONTROL = "no-store, no-cache, max-age=0, s-maxage=0, must-revalidate";
-const NO_STORE_EXTENSIONS = new Set([".css", ".html", ".js"]);
+const NO_STORE_EXTENSIONS = new Set([".css", ".html", ".js", ".mjs"]);
 
 const contentTypes = Object.freeze({
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
   ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
   ".png": "image/png",
-  ".svg": "image/svg+xml"
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".wasm": "application/wasm"
 });
 
 export function json(value) {
@@ -102,17 +114,28 @@ export function parseJsonBody(buffer) {
 function resolveStaticFilePath(pathname) {
   const relativePath = pathname === "/" ? "/index.html" : pathname;
   const safePath = normalize(relativePath).replace(/^(\.\.[/\\])+/, "");
-  const filePath = join(publicDirectory, safePath);
 
-  if (!filePath.startsWith(publicDirectory)) {
-    return null;
+  // Prefer the built bundle (public-dist/) when present; fall back to public/.
+  for (const base of [distDirectory, publicDirectory]) {
+    const filePath = join(base, safePath);
+    if (!filePath.startsWith(base)) continue;
+    try {
+      if (statSync(filePath).isFile()) return filePath;
+    } catch { /* not present in this base */ }
   }
 
-  try {
-    return statSync(filePath).isFile() ? filePath : null;
-  } catch {
-    return null;
+  // SPA fallback: unknown non-asset paths serve index.html from dist (or public).
+  const hasExtension = /\.[A-Za-z0-9]{1,8}$/.test(pathname);
+  if (!hasExtension) {
+    for (const base of [distDirectory, publicDirectory]) {
+      const indexPath = join(base, "index.html");
+      try {
+        if (statSync(indexPath).isFile()) return indexPath;
+      } catch { /* */ }
+    }
   }
+
+  return null;
 }
 
 function buildEntityTag(fileStat) {

@@ -1,14 +1,31 @@
 import { randomUUID } from "node:crypto";
 
+import { config } from "../config.js";
 import { createDeepseekDeltaDecoder, createSseParser } from "../utils/deepseek-sse.js";
 import { createChatSession, deleteChatSession } from "./chat-session-service.js";
 import { proxyDeepseekRequest } from "./deepseek-proxy.js";
 
-export const TOOL_CALL_MARKERS = ["<tool_call", "<function_call", "<tool_code", "<invoke", "<parameter", "[调用 Agent]", "[Called tool:"];
+// Legacy text-format tool-call markers (still parsed by the XYML engine).
+const LEGACY_TOOL_CALL_MARKERS = ["<tool_call", "<function_call", "<tool_code", "<invoke", "<parameter", "[调用 Agent]", "[Called tool:"];
+
+// XYML/QNML protocol block markers, e.g. <|XYML|tool_calls> / <|XYML|invoke>.
+function buildProtocolMarkers() {
+  const protocols = new Set([config.fc.protocol || "XYML", "XYML", "QNML"]);
+  const out = [];
+  for (const p of protocols) {
+    const name = String(p).trim();
+    if (name) out.push(`<|${name}|`);
+  }
+  return out;
+}
+
+const PROTOCOL_MARKERS = buildProtocolMarkers();
+
+export const TOOL_CALL_MARKERS = [...LEGACY_TOOL_CALL_MARKERS, ...PROTOCOL_MARKERS];
 
 const JSON_TOOL_CALL_HINT = '{"name"';
 
-export const MARKER_START_CHARS = [...new Set(["<", "`", ...TOOL_CALL_MARKERS.map(m => m[0])])];
+export const MARKER_START_CHARS = [...new Set(["<", "`", "|", ...TOOL_CALL_MARKERS.map(m => m[0])])];
 
 export function findToolCallMarker(text) {
   let earliest = -1;

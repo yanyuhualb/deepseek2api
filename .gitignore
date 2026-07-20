@@ -9,3 +9,8 @@ logs/
 release/
 Thumbs.db
 .claude/
+
+# Frontend (web/) build artifacts
+web/node_modules/
+web/tsconfig.tsbuildinfo
+public-dist/

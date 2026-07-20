@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme (ChatGPT-inspired, DeepSeek green accent) */
+    --bg: 255 255 255;
+    --surface: 249 249 249;
+    --surface-2: 244 244 244;
+    --border: 234 234 234;
+    --text: 13 13 13;
+    --muted: 108 108 108;
+    --accent: 16 163 127;
+    --accent-strong: 13 138 107;
+    --accent-soft: 230 248 243;
+    --danger: 220 38 38;
+  }
+
+  .dark {
+    --bg: 33 33 33;
+    --surface: 47 47 47;
+    --surface-2: 60 60 60;
+    --border: 66 66 66;
+    --text: 236 236 236;
+    --muted: 165 165 165;
+    --accent: 16 163 127;
+    --accent-strong: 29 184 144;
+    --accent-soft: 30 50 45;
+    --danger: 248 113 113;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  /* Scrollbars */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border));
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.5); background-clip: padding-box; }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* highlight.js theme (compact, theme-aware) */
+.hljs { display: block; overflow-x: auto; padding: 0; background: transparent; color: inherit; }
+.hljs-comment, .hljs-quote { color: rgb(var(--muted)); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag { color: rgb(var(--accent-strong)); }
+.hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet { color: rgb(180 120 40); }
+.dark .hljs-string, .dark .hljs-attr, .dark .hljs-symbol, .dark .hljs-bullet { color: rgb(234 179 8); }
+.hljs-title, .hljs-section, .hljs-function .hljs-title { color: rgb(var(--text)); font-weight: 600; }
+.hljs-number, .hljs-literal, .hljs-type, .hljs-params { color: rgb(120 80 200); }
+.dark .hljs-number, .dark .hljs-literal, .dark .hljs-type, .dark .hljs-params { color: rgb(192 132 252); }
+.hljs-meta { color: rgb(var(--muted)); }
+.hljs-addition { color: rgb(var(--accent-strong)); }
+.hljs-deletion { color: rgb(var(--danger)); }

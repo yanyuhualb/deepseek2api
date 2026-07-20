@@ -2,14 +2,21 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config.js";
 import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
-import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
+import { extractToolCalls } from "../utils/tool-prompt.js";
+import {
+  buildFcInstructions,
+  completeAndParseWithRetry,
+  finalizeToolCalls,
+  prepareFcContext,
+  renderAssistantToolCall,
+  renderToolResultHeader,
+  resolveFcConfig
+} from "./fc-engine.js";
 import {
   checkForToolCallMarker,
   collectExternalToolNameAliasesFromMessages,
-  collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
-  filterToolCalls,
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
@@ -55,9 +62,11 @@ function normalizeResponsesInput(input, instructions) {
     }
 
     if (item.type === "function_call") {
+      let argsObj = {};
+      try { argsObj = JSON.parse(item.arguments ?? "{}"); } catch { argsObj = {}; }
       messages.push({
         role: "assistant",
-        content: `[Called tool: ${item.name}]\n<tool_call={"name": "${item.name}", "arguments": ${item.arguments ?? "{}"}}`
+        content: `[Called tool: ${item.name}]\n${renderAssistantToolCall(item.name, argsObj)}`
       });
       continue;
     }
@@ -65,7 +74,7 @@ function normalizeResponsesInput(input, instructions) {
     if (item.type === "function_call_output") {
       messages.push({
         role: "tool",
-        content: `[Tool Result for call ${item.call_id ?? "unknown"}]\n${typeof item.output === "string" ? item.output : JSON.stringify(item.output)}`
+        content: `${renderToolResultHeader({ toolCallId: item.call_id ?? "unknown" })}\n${typeof item.output === "string" ? item.output : JSON.stringify(item.output)}`
       });
     }
   }
@@ -106,8 +115,10 @@ function normalizeResponsesToolChoice(toolChoice, tools) {
 function resolveResponsesRequest(body) {
   const tools = normalizeResponsesTools(body.tools);
   const toolChoice = normalizeResponsesToolChoice(body.tool_choice, tools);
+  const fcConfig = resolveFcConfig();
+  const fcContext = prepareFcContext(tools, fcConfig);
   const toolPrompt = (tools?.length && toolChoice !== "none")
-    ? buildToolSystemPrompt(tools, toolChoice)
+    ? buildFcInstructions(fcContext.activeTools, toolChoice, fcConfig)
     : null;
 
   const instructions = [body.instructions, toolPrompt].filter(Boolean).join("\n\n") || undefined;
@@ -125,7 +136,8 @@ function resolveResponsesRequest(body) {
     overflowText,
     overflowCount,
     externalToolNameAliases,
-    tools
+    tools,
+    fcContext
   };
 }
 
@@ -188,13 +200,15 @@ export async function collectResponsesResult({ account, body, deleteAfterFinish,
       try {
         const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
         const upstreamRequest = { ...requestOptions, prompt };
-        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
-        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
-
-        const rawToolCalls = extractToolCalls(content, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const { content, reasoningContent, toolCalls } = await completeAndParseWithRetry({
+          account,
+          requestOptions: upstreamRequest,
+          sessionId,
+          debugCtx,
+          refFileIds,
+          fcContext: requestOptions.fcContext,
+          externalAliases: requestOptions.externalToolNameAliases
+        });
 
         const output = buildResponsesOutput(toolCalls, content, reasoningContent);
         const now = Math.floor(Date.now() / 1000);
@@ -422,14 +436,13 @@ export async function streamResponsesResult({ response, account, body, deleteAft
       emitMessageDone(writeSSE, state, state.emittedText, textOutputBaseIdx());
 
       if (state.toolCallDetected) {
-        const rawToolCalls = extractToolCalls(state.toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const toolCalls = requestOptions.tools?.length
+          ? finalizeToolCalls(state.toolCallBuffer, requestOptions.tools, requestOptions.fcContext, requestOptions.externalToolNameAliases, debugCtx)
+          : (extractToolCalls(state.toolCallBuffer, debugCtx) || null);
         state.toolCalls = toolCalls;
         debugCtx?.logToolDetection({
           toolCallBufferLength: state.toolCallBuffer.length,
-          rawToolCallCount: rawToolCalls?.length ?? 0,
+          rawToolCallCount: toolCalls?.length ?? 0,
           filteredToolCallCount: toolCalls?.length ?? 0,
           toolCalls: toolCalls?.map(tc => ({ name: tc.function.name, id: tc.id })) ?? []
         });

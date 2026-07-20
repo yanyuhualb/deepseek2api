@@ -2,14 +2,21 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config.js";
 import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
-import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
+import { extractToolCalls } from "../utils/tool-prompt.js";
+import {
+  buildFcInstructions,
+  completeAndParseWithRetry,
+  finalizeToolCalls,
+  prepareFcContext,
+  renderAssistantToolCall,
+  renderToolResultHeader,
+  resolveFcConfig
+} from "./fc-engine.js";
 import {
   checkForToolCallMarker,
   collectExternalToolNameAliasesFromMessages,
-  collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
-  filterToolCalls,
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
@@ -46,12 +53,15 @@ function normalizeAnthropicMessages(messages) {
       }
 
       if (block.type === "tool_use") {
-        const args = typeof block.input === "string"
-          ? block.input
-          : JSON.stringify(block.input);
+        let argsObj = {};
+        if (typeof block.input === "string") {
+          try { argsObj = JSON.parse(block.input); } catch { argsObj = {}; }
+        } else if (block.input && typeof block.input === "object") {
+          argsObj = block.input;
+        }
         return [{
           role: "assistant",
-          content: `[Called tool: ${block.name}]\n<tool_call={"name": "${block.name}", "arguments": ${args}}>`
+          content: `[Called tool: ${block.name}]\n${renderAssistantToolCall(block.name, argsObj)}`
         }];
       }
 
@@ -64,7 +74,7 @@ function normalizeAnthropicMessages(messages) {
         const toolUseId = block.tool_use_id ?? "unknown";
         return [{
           role: "tool",
-          content: `[Tool Result for ${toolUseId}]\n${resultText}`
+          content: `${renderToolResultHeader({ toolCallId: toolUseId })}\n${resultText}`
         }];
       }
 
@@ -103,8 +113,10 @@ function resolveAnthropicRequest(body) {
   const tools = normalizeAnthropicTools(body.tools);
   const toolChoice = normalizeAnthropicToolChoice(body.tool_choice);
   const systemPrompt = extractSystemPrompt(body.system);
+  const fcConfig = resolveFcConfig();
+  const fcContext = prepareFcContext(tools, fcConfig);
   const toolPrompt = (tools?.length && toolChoice !== "none")
-    ? buildToolSystemPrompt(tools, toolChoice)
+    ? buildFcInstructions(fcContext.activeTools, toolChoice, fcConfig)
     : null;
 
   const combinedSystem = [systemPrompt, toolPrompt].filter(Boolean).join("\n\n") || null;
@@ -126,6 +138,7 @@ function resolveAnthropicRequest(body) {
     overflowCount,
     externalToolNameAliases,
     tools,
+    fcContext,
     modelName: body.model ?? "deepseek-chat-fast"
   };
 }
@@ -174,13 +187,15 @@ export async function collectAnthropicMessage({ account, body, deleteAfterFinish
       try {
         const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
         const upstreamRequest = { ...requestOptions, prompt };
-        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds });
-        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
-
-        const rawToolCalls = extractToolCalls(content, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const { content, reasoningContent, toolCalls } = await completeAndParseWithRetry({
+          account,
+          requestOptions: upstreamRequest,
+          sessionId,
+          debugCtx,
+          refFileIds,
+          fcContext: requestOptions.fcContext,
+          externalAliases: requestOptions.externalToolNameAliases
+        });
 
         const contentBlocks = formatAnthropicContent(toolCalls, content, reasoningContent);
 
@@ -395,13 +410,12 @@ export async function streamAnthropicMessage({ response, account, body, deleteAf
       closeTextBlock();
 
       if (toolCallDetected) {
-        const rawToolCalls = extractToolCalls(toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const toolCalls = requestOptions.tools?.length
+          ? finalizeToolCalls(toolCallBuffer, requestOptions.tools, requestOptions.fcContext, requestOptions.externalToolNameAliases, debugCtx)
+          : (extractToolCalls(toolCallBuffer, debugCtx) || null);
         debugCtx?.logToolDetection({
           toolCallBufferLength: toolCallBuffer.length,
-          rawToolCallCount: rawToolCalls?.length ?? 0,
+          rawToolCallCount: toolCalls?.length ?? 0,
           filteredToolCallCount: toolCalls?.length ?? 0,
           toolCalls: toolCalls?.map(tc => ({ name: tc.function.name, id: tc.id })) ?? []
         });

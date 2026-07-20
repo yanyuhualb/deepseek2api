@@ -2,14 +2,21 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config.js";
 import { buildPromptWithOverflow, formatUpstreamError, wrapUpstreamError } from "../utils/prompt.js";
-import { buildToolSystemPrompt, extractToolCalls } from "../utils/tool-prompt.js";
+import { extractToolCalls } from "../utils/tool-prompt.js";
+import {
+  buildFcInstructions,
+  completeAndParseWithRetry,
+  finalizeToolCalls,
+  prepareFcContext,
+  renderAssistantToolCall,
+  renderToolResultHeader,
+  resolveFcConfig
+} from "./fc-engine.js";
 import {
   checkForToolCallMarker,
   collectExternalToolNameAliasesFromMessages,
-  collectTaggedContent,
   computeSafeFlushEnd,
   consumeTaggedStream,
-  filterToolCalls,
   startCompletion,
   withCompletionSession
 } from "./completion-core.js";
@@ -39,10 +46,13 @@ function extractContent(content) {
 }
 
 function normalizeToolCall(toolCall) {
-  const args = typeof toolCall.function.arguments === "string"
-    ? toolCall.function.arguments
-    : JSON.stringify(toolCall.function.arguments);
-  return `<tool_call={"name": "${toolCall.function.name}", "arguments": ${args}}`;
+  let argsObj = {};
+  try {
+    argsObj = JSON.parse(toolCall.function.arguments);
+  } catch {
+    argsObj = {};
+  }
+  return renderAssistantToolCall(toolCall.function.name, argsObj);
 }
 
 function normalizeMessages(messages) {
@@ -58,8 +68,8 @@ function normalizeMessages(messages) {
     if (message.role === "tool") {
       const { text: resultText } = extractContent(message.content);
       const toolName = message.name || "unknown";
-      const callId = message.tool_call_id ? ` (call ${message.tool_call_id})` : "";
-      return [{ role: "tool", content: `[Tool Result for "${toolName}"${callId}]\n${resultText}` }];
+      const callId = message.tool_call_id ?? "unknown";
+      return [{ role: "tool", content: `${renderToolResultHeader({ name: toolName, toolCallId: callId })}\n${resultText}` }];
     }
     const { text, images: msgImages } = extractContent(message.content);
     images.push(...msgImages);
@@ -73,8 +83,10 @@ function resolveCompletionRequest(body) {
 
   const tools = body?.tools;
   const toolChoice = body?.tool_choice;
+  const fcConfig = resolveFcConfig();
+  const fcContext = prepareFcContext(tools, fcConfig);
   const toolPrompt = (tools?.length && toolChoice !== "none")
-    ? buildToolSystemPrompt(tools, toolChoice)
+    ? buildFcInstructions(fcContext.activeTools, toolChoice, fcConfig)
     : null;
 
   const resolvedModel = resolveOpenAiModel(body?.model);
@@ -103,6 +115,7 @@ function resolveCompletionRequest(body) {
     overflowText,
     overflowCount,
     tools: tools || null,
+    fcContext,
     externalToolNameAliases,
     images
   };
@@ -136,13 +149,15 @@ export async function collectOpenAiResponse({ account, body, deleteAfterFinish =
         const { prompt, refFileIds } = await applyOverflowUpload(account, requestOptions, debugCtx);
         const mergedRefFileIds = [...imageFileIds, ...refFileIds];
         const upstreamRequest = { ...requestOptions, prompt };
-        const { response } = await startCompletion({ account, requestOptions: upstreamRequest, sessionId, debugCtx, refFileIds: mergedRefFileIds });
-        const { content, reasoningContent } = await collectTaggedContent(response.body, debugCtx);
-
-        const rawToolCalls = extractToolCalls(content, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const { content, reasoningContent, toolCalls } = await completeAndParseWithRetry({
+          account,
+          requestOptions: upstreamRequest,
+          sessionId,
+          debugCtx,
+          refFileIds: mergedRefFileIds,
+          fcContext: requestOptions.fcContext,
+          externalAliases: requestOptions.externalToolNameAliases
+        });
 
         if (toolCalls) {
           const message = {
@@ -326,8 +341,10 @@ export async function streamOpenAiResponse(options) {
       if (textBuffer && !toolCallDetected) {
         if (!decidedAsText || checkForToolCallMarker(textBuffer) !== -1) {
           if (!decidedAsText) {
-            const rawToolCalls = extractToolCalls(textBuffer, debugCtx);
-            if (rawToolCalls) {
+            const detected = requestOptions.tools?.length
+              ? finalizeToolCalls(textBuffer, requestOptions.tools, requestOptions.fcContext, requestOptions.externalToolNameAliases, debugCtx)
+              : extractToolCalls(textBuffer, debugCtx);
+            if (detected) {
               toolCallDetected = true;
               toolCallBuffer = textBuffer;
               textBuffer = "";
@@ -346,13 +363,12 @@ export async function streamOpenAiResponse(options) {
       }
 
       if (toolCallDetected) {
-        const rawToolCalls = extractToolCalls(toolCallBuffer, debugCtx);
-        const toolCalls = requestOptions.tools
-          ? filterToolCalls(rawToolCalls, requestOptions.tools, requestOptions.externalToolNameAliases)
-          : rawToolCalls;
+        const toolCalls = requestOptions.tools?.length
+          ? finalizeToolCalls(toolCallBuffer, requestOptions.tools, requestOptions.fcContext, requestOptions.externalToolNameAliases, debugCtx)
+          : (extractToolCalls(toolCallBuffer, debugCtx) || null);
         debugCtx?.logToolDetection({
           toolCallBufferLength: toolCallBuffer.length,
-          rawToolCallCount: rawToolCalls?.length ?? 0,
+          rawToolCallCount: toolCalls?.length ?? 0,
           filteredToolCallCount: toolCalls?.length ?? 0,
           toolCalls: toolCalls?.map(tc => ({ name: tc.function.name, id: tc.id })) ?? []
         });

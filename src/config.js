@@ -117,5 +117,17 @@ export const config = Object.freeze({
     enabled: Boolean(adminUsername && adminPassword),
     username: adminUsername,
     password: adminPassword
+  }),
+  fc: Object.freeze({
+    protocol: (process.env.FC_PROTOCOL ?? "XYML").trim() || "XYML",
+    fcMode: (process.env.FC_MODE ?? "auto").trim().toLowerCase(),
+    stripThinkTags: (process.env.FC_STRIP_THINK_TAGS ?? "true") !== "false",
+    obfuscateToolNames: process.env.FC_OBFUSCATE_TOOL_NAMES === "true",
+    enableCliProfiles: (process.env.FC_ENABLE_CLI_PROFILES ?? "true") !== "false",
+    fcErrorRetry: (process.env.FC_ERROR_RETRY ?? "true") !== "false",
+    fcErrorRetryMax: Number(process.env.FC_ERROR_RETRY_MAX ?? 1),
+    unknownTool: (process.env.FC_UNKNOWN_TOOL ?? "keep").trim().toLowerCase(),
+    missingRequired: (process.env.FC_MISSING_REQUIRED ?? "keep").trim().toLowerCase(),
+    promptStyle: (process.env.FC_PROMPT_STYLE ?? "standard").trim().toLowerCase()
   })
 });
